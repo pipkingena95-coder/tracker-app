@@ -1,0 +1,7 @@
+[
+  {
+    "a": "polymarket:<conditionId рынка Polymarket>",
+    "b": "kalshi:<ticker рынка Kalshi>",
+    "inverted": false
+  }
+]
