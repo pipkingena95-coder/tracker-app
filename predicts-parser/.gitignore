@@ -3,3 +3,4 @@ __pycache__/
 predicts.db
 pairs.json
 *.csv
+discover-out/

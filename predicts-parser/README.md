@@ -17,6 +17,9 @@
 | LBank (LBank Predict) | ⏳ нужен доступ к сайту | публичного API нет, только внутренние эндпоинты сайта |
 | MEXC (Prediction Markets) | ⏳ нужен доступ к сайту | публичного API нет, только внутренние эндпоинты сайта |
 
+Как будут подключаться LBank и MEXC и как найти их эндпоинты — в [docs/lbank-mexc.md](docs/lbank-mexc.md)
+(там же разведчик `tools/discover.py`).
+
 Polymarket и Kalshi покрывают ещё и биржи, которые показывают их рынки у себя: Bitget Wallet, Phemex и KuCoin Predictions
 работают на рынках Polymarket, а Coinbase и Robinhood — на рынках Kalshi. Цены там те же самые.
 
