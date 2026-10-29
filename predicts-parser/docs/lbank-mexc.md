@@ -75,7 +75,7 @@ python tools/discover.py --probe-lbank
 
 ```bash
 python tools/discover.py --probe-lbank --antik dolphin --profile 123456789
-python tools/discover.py --probe-lbank --antik adspower --profile jabc123
+python tools/discover.py --probe-lbank --antik adspower --profile jabc123   # или номер из колонки No.
 python tools/discover.py --probe-lbank --antik octo --profile <UUID>
 python tools/discover.py --probe-lbank --cdp 9222      # любой браузер с портом отладки
 ```

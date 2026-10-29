@@ -18,7 +18,7 @@
 
 В антидетект-браузере (свой отпечаток и прокси профиля):
     python tools/discover.py --antik dolphin --profile 123456
-    python tools/discover.py --antik adspower --profile jabc123
+    python tools/discover.py --antik adspower --profile jabc123   (или номер из колонки No.)
     python tools/discover.py --antik octo --profile <UUID профиля>
         Скрипт сам запустит профиль через локальный API программы
         и откроет в нём вкладки LBank и MEXC.
@@ -516,7 +516,9 @@ def start_antik(kind: str, profile: str, base: Optional[str], token: Optional[st
         data = _local_json(f"{base}/v1.0/browser_profiles/{urllib.parse.quote(profile)}/start?automation=1")
     elif kind == "adspower":
         headers = {"Authorization": f"Bearer {token}"} if token else None
-        data = _local_json(f"{base}/api/v1/browser/start?user_id={urllib.parse.quote(profile)}",
+        # ID профиля (user_id) — буквы и цифры, а номер из колонки «No.» — только цифры
+        param = "serial_number" if profile.isdigit() else "user_id"
+        data = _local_json(f"{base}/api/v1/browser/start?{param}={urllib.parse.quote(profile)}",
                            headers=headers)
         if isinstance(data, dict) and data.get("code") not in (0, None):
             raise RuntimeError(f"AdsPower: {data.get('msg') or data}")
