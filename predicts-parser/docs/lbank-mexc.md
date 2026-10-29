@@ -60,6 +60,9 @@ python tools/discover.py --probe-lbank
 # и пару рынков, потом нажми Enter в терминале
 ```
 
+На Windows достаточно поставить Python (с галочкой «Add python.exe to PATH») и дважды щёлкнуть
+`tools/discover-windows.bat`: он сам установит Playwright и Chromium и запустит разведчика.
+
 Результат — `discover-out/report.md` и папка `discover-out/candidates/`. По ним пишутся адаптеры
 `predicts/sources/lbank.py` и `predicts/sources/mexc.py`.
 
