@@ -38,6 +38,25 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(discover.decode_frame(json.dumps(msg)), msg)
         self.assertIsNone(discover.decode_frame(b"\x08\x96\x01"))
 
+    def test_antik_endpoints(self):
+        f = discover.find_cdp_endpoint
+        # Dolphin: порт и путь отдельно
+        self.assertEqual(f({"success": True, "automation": {"port": 50568,
+                                                            "wsEndpoint": "/devtools/browser/abc"}}),
+                         "ws://127.0.0.1:50568/devtools/browser/abc")
+        # AdsPower: готовый ws в data.ws.puppeteer
+        self.assertEqual(f({"code": 0, "data": {"ws": {"selenium": "127.0.0.1:61001",
+                                                        "puppeteer": "ws://127.0.0.1:61001/devtools/browser/x"},
+                                                 "debug_port": "61001"}}),
+                         "ws://127.0.0.1:61001/devtools/browser/x")
+        # только порт
+        self.assertEqual(f({"uuid": "u", "debug_port": "9333"}), "http://127.0.0.1:9333")
+        self.assertIsNone(f({"success": False, "error": "already running"}))
+        self.assertEqual(discover.cdp_url("9222"), "http://127.0.0.1:9222")
+        self.assertEqual(discover.cdp_url("127.0.0.1:9222"), "http://127.0.0.1:9222")
+        self.assertEqual(discover.cdp_url("ws://127.0.0.1:1/devtools/browser/z"),
+                         "ws://127.0.0.1:1/devtools/browser/z")
+
 
 if __name__ == "__main__":
     unittest.main()

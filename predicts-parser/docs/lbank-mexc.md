@@ -63,6 +63,33 @@ python tools/discover.py --probe-lbank
 На Windows достаточно поставить Python (с галочкой «Add python.exe to PATH») и дважды щёлкнуть
 `tools/discover-windows.bat`: он сам установит Playwright и Chromium и запустит разведчика.
 
+### В антидетект-браузере
+
+Чтобы биржи видели отпечаток и прокси твоего профиля, разведчик может работать внутри антидетекта.
+Он сам запускает профиль через локальный API программы и открывает в нём вкладки LBank и MEXC.
+Записываются только эти вкладки (и окна, открытые из них), остальные вкладки профиля не трогаются.
+После завершения профиль остаётся открытым.
+
+На Windows: дважды щёлкни `tools/discover-antik.bat`, выбери программу, введи ID профиля и,
+если нужно, API-токен. Из командной строки:
+
+```bash
+python tools/discover.py --probe-lbank --antik dolphin --profile 123456789
+python tools/discover.py --probe-lbank --antik adspower --profile jabc123
+python tools/discover.py --probe-lbank --antik octo --profile <UUID>
+python tools/discover.py --probe-lbank --cdp 9222      # любой браузер с портом отладки
+```
+
+- Перед запуском **закрой профиль** в антидетекте, иначе программа откажется запускать его второй раз.
+- Программа должна быть запущена, а ты — в ней залогинен. Если локальный API отвечает 401,
+  передай API-токен из личного кабинета через `--antik-token`.
+- Порт локального API по умолчанию: Dolphin — 3001, AdsPower — 50325, Octo — 58888. Если в настройках
+  программы порт другой, укажи его через `--antik-url http://127.0.0.1:ПОРТ`.
+- У некоторых антидетектов локальный API есть только на платных тарифах. Если его нет, есть запасной
+  вариант: `--proxy http://user:pass@host:port` с прокси профиля. Тогда встроенный Chromium выйдет в сеть
+  с того же IP.
+- Лучше брать профиль, в котором ты **не залогинен на LBank и MEXC**: рынки видны и так.
+
 Результат — `discover-out/report.md` и папка `discover-out/candidates/`. По ним пишутся адаптеры
 `predicts/sources/lbank.py` и `predicts/sources/mexc.py`.
 

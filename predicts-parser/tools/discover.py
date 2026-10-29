@@ -16,6 +16,17 @@
     python tools/discover.py --url https://www.mexc.com/... --headless --wait 40
         Без окна: открыть страницу, подождать и прокрутить её.
 
+В антидетект-браузере (свой отпечаток и прокси профиля):
+    python tools/discover.py --antik dolphin --profile 123456
+    python tools/discover.py --antik adspower --profile jabc123
+    python tools/discover.py --antik octo --profile <UUID профиля>
+        Скрипт сам запустит профиль через локальный API программы
+        и откроет в нём вкладки LBank и MEXC.
+    python tools/discover.py --cdp 9222
+        Любой другой браузер, запущенный с портом отладки (--remote-debugging-port).
+    python tools/discover.py --proxy http://user:pass@host:port
+        Без антидетекта, но через прокси профиля — тот же IP.
+
 Не входи в аккаунт: рынки видны и без него, а в ответах не окажется личных данных.
 Значения cookie, токенов и подписей в отчёте заменяются на <redacted>.
 
@@ -64,6 +75,9 @@ KEY_HINTS = re.compile(
 SKIP_TYPES = {"image", "stylesheet", "font", "media", "script", "manifest", "texttrack"}
 NEXT_DATA = re.compile(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 MAX_WS_FRAMES = 300
+# Повторы запросов и проверка Open API идут через этот opener; --proxy направляет их
+# через тот же прокси, что стоит в профиле антидетекта.
+OPENER = urllib.request.build_opener()
 MIN_SCORE = 5   # ниже — справочники, балансы и прочий шум: в candidates/ не попадают
 
 
@@ -199,6 +213,7 @@ class Recorder:
     ws: Dict[str, List[Any]] = field(default_factory=dict)
     tasks: set = field(default_factory=set)
     probes: List[str] = field(default_factory=list)   # строки для раздела отчёта про Open API
+    pages: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         for sub in ("all", "candidates", "ws"):
@@ -256,8 +271,15 @@ class Recorder:
             self.save(response.url, req.method, response.status, req.resource_type,
                       headers, post_data, data)
 
-    def attach_page(self, page) -> None:
+    def track(self, page) -> None:
+        """Слушать вкладку и всё, что из неё открывается. Чужие вкладки профиля
+        антидетекта не трогаем — там могут быть залогиненные аккаунты."""
+        if page in self.pages:
+            return
+        self.pages.append(page)
+        page.on("response", self.on_response)
         page.on("websocket", self.on_websocket)
+        page.on("popup", self.track)
 
     def on_websocket(self, ws) -> None:
         frames = self.ws.setdefault(redact_url(ws.url), [])
@@ -295,7 +317,7 @@ def replay(item: Captured, timeout: float = 15) -> str:
     data = item.post_data.encode() if item.post_data and item.method != "GET" else None
     req = urllib.request.Request(url, data=data, headers=keep, method=item.method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read()
             text = raw.decode("utf-8", "replace")
             if item.kind == "ssr":
@@ -400,7 +422,7 @@ def probe_lbank(rec: Recorder) -> None:
     for url in LBANK_PROBES:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with OPENER.open(req, timeout=20) as resp:
                 data = json.loads(resp.read())
         except Exception as e:  # noqa: BLE001
             rec.probes.append(f"- `{url}` — ❌ {type(e).__name__}: {e}")
@@ -424,6 +446,114 @@ def probe_lbank(rec: Recorder) -> None:
             rec.probes.append(f"  - пример: `{json.dumps(items[0], ensure_ascii=False)[:300]}`")
 
 
+# ---------- антидетект-браузеры ----------
+
+# Адреса локальных API по умолчанию; если в настройках программы порт другой — --antik-url.
+ANTIK_URLS = {
+    "dolphin": "http://localhost:3001",
+    "adspower": "http://127.0.0.1:50325",
+    "octo": "http://localhost:58888",
+}
+
+
+def _local_json(url: str, method: str = "GET", body: Any = None,
+                headers: Optional[Dict[str, str]] = None, timeout: float = 120) -> Any:
+    hdrs = {"Content-Type": "application/json", **(headers or {})}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+    # локальный API — без системного прокси, иначе запрос к localhost уйдёт наружу
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"{url}: HTTP {e.code} {e.read()[:300]!r}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"{url}: {e.reason} — запущена ли программа и верный ли порт?") from e
+
+
+def find_cdp_endpoint(data: Any) -> Optional[str]:
+    """Адрес отладки из ответа «запустить профиль». У каждого антидетекта поля
+    называются по-своему, поэтому ищем по всему ответу: готовый ws://, либо
+    порт + путь /devtools/browser/..., либо просто порт."""
+    found: Dict[str, Any] = {}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                key = k.lower()
+                if isinstance(v, str) and v.startswith("ws://") and "ws" not in found:
+                    found["ws"] = v
+                elif isinstance(v, str) and v.startswith("/devtools/"):
+                    found.setdefault("path", v)
+                elif key in ("port", "debug_port", "debugport", "remote_debugging_port") \
+                        and str(v).isdigit() and int(v) > 0:
+                    found.setdefault("port", int(v))
+                elif isinstance(v, str) and re.fullmatch(r"(127\.0\.0\.1|localhost):\d+", v):
+                    found.setdefault("hostport", v)
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(data)
+    if "ws" in found:
+        return found["ws"]
+    if "port" in found and "path" in found:
+        return f"ws://127.0.0.1:{found['port']}{found['path']}"
+    if "port" in found:
+        return f"http://127.0.0.1:{found['port']}"
+    if "hostport" in found:
+        return f"http://{found['hostport']}"
+    return None
+
+
+def start_antik(kind: str, profile: str, base: Optional[str], token: Optional[str]) -> str:
+    base = (base or ANTIK_URLS[kind]).rstrip("/")
+    if kind == "dolphin":
+        if token:
+            _local_json(f"{base}/v1.0/auth/login-with-token", "POST", {"token": token})
+        data = _local_json(f"{base}/v1.0/browser_profiles/{urllib.parse.quote(profile)}/start?automation=1")
+    elif kind == "adspower":
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        data = _local_json(f"{base}/api/v1/browser/start?user_id={urllib.parse.quote(profile)}",
+                           headers=headers)
+        if isinstance(data, dict) and data.get("code") not in (0, None):
+            raise RuntimeError(f"AdsPower: {data.get('msg') or data}")
+    else:  # octo
+        data = _local_json(f"{base}/api/profiles/start", "POST",
+                           {"uuid": profile, "headless": False, "debug_port": True, "only_local": True})
+    endpoint = find_cdp_endpoint(data)
+    if not endpoint:
+        raise RuntimeError(
+            f"в ответе нет адреса отладки: {json.dumps(data, ensure_ascii=False)[:500]}\n"
+            "Если профиль уже открыт — закрой его и запусти скрипт снова, "
+            "или укажи порт отладки вручную через --cdp.")
+    return endpoint
+
+
+def playwright_proxy(url: Optional[str]) -> Optional[Dict[str, str]]:
+    """http://user:pass@host:port -> формат Playwright (логин отдельно от адреса)."""
+    if not url:
+        return None
+    parts = urllib.parse.urlsplit(url if "://" in url else f"http://{url}")
+    proxy = {"server": f"{parts.scheme}://{parts.hostname}:{parts.port}"}
+    if parts.username:
+        proxy["username"] = urllib.parse.unquote(parts.username)
+        proxy["password"] = urllib.parse.unquote(parts.password or "")
+    return proxy
+
+
+def cdp_url(value: str) -> str:
+    """--cdp 9222 / 127.0.0.1:9222 / http://... / ws://... -> адрес для connect_over_cdp."""
+    value = value.strip()
+    if value.isdigit():
+        return f"http://127.0.0.1:{value}"
+    if not re.match(r"^(ws|http)s?://", value):
+        return f"http://{value}"
+    return value
+
+
 async def run(args) -> None:
     try:
         from playwright.async_api import async_playwright
@@ -436,48 +566,62 @@ async def run(args) -> None:
     rec = Recorder(out)
     if args.probe_lbank:
         probe_lbank(rec)
+    external = bool(args.cdp or args.antik)   # чужой браузер: антидетект или Chrome с отладкой
+    enter = None
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=args.headless,
-                                           executable_path=args.browser_path or None)
-        ctx = await browser.new_context(locale="en-US", viewport={"width": 1400, "height": 900})
-        ctx.on("response", rec.on_response)
-        ctx.on("page", rec.attach_page)
+        if external:
+            endpoint = cdp_url(args.cdp) if args.cdp else \
+                start_antik(args.antik, args.profile, args.antik_url, args.antik_token)
+            print(f"Подключаюсь к браузеру: {endpoint}", file=sys.stderr)
+            browser = await pw.chromium.connect_over_cdp(endpoint, timeout=60000)
+            ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        else:
+            browser = await pw.chromium.launch(headless=args.headless,
+                                               executable_path=args.browser_path or None,
+                                               proxy=playwright_proxy(args.proxy))
+            ctx = await browser.new_context(locale="en-US", viewport={"width": 1400, "height": 900})
+            ctx.on("page", rec.track)  # в своём браузере слушаем и вкладки, открытые вручную
         for url in urls:
             page = await ctx.new_page()
+            rec.track(page)
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             except Exception as e:  # noqa: BLE001
                 print(f"⚠ {url}: {e}", file=sys.stderr)
-        if args.headless:
+        alive = lambda: browser.is_connected() and any(not p.is_closed() for p in rec.pages)
+        if args.headless and not external:
             for _ in range(int(args.wait)):
                 await asyncio.sleep(1)
-                for p in ctx.pages:  # прокрутка подгружает ленивые списки
+                for p in rec.pages:  # прокрутка подгружает ленивые списки
                     try:
                         await p.mouse.wheel(0, 1500)
                     except Exception:  # noqa: BLE001
                         pass
         else:
             print("Перейди в раздел предиктов, открой пару категорий и рынков.\n"
-                  "Когда закончишь — нажми Enter здесь (или закрой браузер).", file=sys.stderr)
+                  "Когда закончишь — нажми Enter здесь (или закрой открытые скриптом вкладки).",
+                  file=sys.stderr)
             loop = asyncio.get_running_loop()
             enter = loop.run_in_executor(None, sys.stdin.readline)
-            while not enter.done() and browser.is_connected() and ctx.pages:
+            while not enter.done() and alive():
                 await asyncio.sleep(0.5)
         await rec.drain()
-        try:
-            await browser.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if not external:  # профиль антидетекта не закрываем — только отключаемся
+            try:
+                await browser.close()
+            except Exception:  # noqa: BLE001
+                pass
     report = write_report(rec, urls, args.top, not args.no_replay)
     print(f"\nГотово: {report}\nПришли report.md и папку {out / 'candidates'} — по ним пишется адаптер.",
           file=sys.stderr)
-    if not args.headless:
-        # input() в отдельном потоке ждёт Enter — после закрытия браузера выходим сразу
+    if enter is not None and not enter.done():
+        # поток с readline ждёт Enter — после закрытия вкладок выходим сразу
         sys.stderr.flush()
         os._exit(0)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    global OPENER
     p = argparse.ArgumentParser(description="Найти внутренние эндпоинты предиктов на сайте биржи.")
     p.add_argument("--site", nargs="+", choices=list(START_URLS), default=list(START_URLS),
                    help="какие сайты открыть (по умолчанию оба)")
@@ -490,7 +634,27 @@ def main(argv: Optional[List[str]] = None) -> None:
     p.add_argument("--probe-lbank", action="store_true",
                    help="ещё проверить публичный контрактный API LBank")
     p.add_argument("--browser-path", help="путь к Chromium, если не ставили через playwright install")
-    asyncio.run(run(p.parse_args(argv)))
+    g = p.add_argument_group("антидетект-браузер")
+    g.add_argument("--antik", choices=list(ANTIK_URLS),
+                   help="запустить профиль антидетекта через его локальный API")
+    g.add_argument("--profile", help="ID профиля (Dolphin, AdsPower) или UUID (Octo)")
+    g.add_argument("--antik-url", help="адрес локального API, если порт в программе другой")
+    g.add_argument("--antik-token", help="API-токен (Dolphin: login-with-token, AdsPower: API key)")
+    g.add_argument("--cdp", help="подключиться к уже открытому браузеру по порту отладки: 9222 или ws://...")
+    g.add_argument("--proxy", help="прокси http://user:pass@host:port: через него идут проверка "
+                                   "запросов и встроенный Chromium (в профиле антидетекта прокси свой)")
+    args = p.parse_args(argv)
+    if args.antik and not args.profile:
+        p.error("для --antik нужен --profile")
+    if args.proxy:
+        if "://" not in args.proxy:
+            args.proxy = "http://" + args.proxy
+        OPENER = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": args.proxy, "https": args.proxy}))
+    try:
+        asyncio.run(run(args))
+    except RuntimeError as e:
+        sys.exit(f"Ошибка: {e}")
 
 
 if __name__ == "__main__":
