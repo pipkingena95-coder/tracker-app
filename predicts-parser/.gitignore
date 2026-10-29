@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+predicts.db
+pairs.json
+*.csv
+discover-out/
